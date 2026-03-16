@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -224,14 +225,14 @@ h1{font-size:21px;font-weight:500}
 <div class="pnl" id="p-policy">
   <div class="sec"><div class="sec-t">Current policy rates</div>
     <div class="g3">
-      <div class="mc"><div class="ml">🇺🇸 Fed funds (upper)</div><div class="mv" id="p-fed">—</div><div class="ms src">FRED DFEDTARU (daily)</div></div>
-      <div class="mc"><div class="ml">🇦🇺 RBA cash rate</div><div class="mv" id="p-rba">—</div><div class="ms src">BIS WS_CBPOL_D → FRED RBATCTR</div></div>
-      <div class="mc"><div class="ml">🇪🇺 ECB deposit</div><div class="mv" id="p-ecb">—</div><div class="ms src">FRED ECBDFR → BIS fallback</div></div>
+      <div class="mc"><div class="ml">🇺🇸 Fed funds (upper)</div><div class="mv" id="p-fed">—</div><div class="ms src">DFEDTARU → FEDFUNDS</div></div>
+      <div class="mc"><div class="ml">🇦🇺 RBA cash rate</div><div class="mv" id="p-rba">—</div><div class="ms src">RBATCTR → IRSTAU01AUM156N</div></div>
+      <div class="mc"><div class="ml">🇪🇺 ECB deposit</div><div class="mv" id="p-ecb">—</div><div class="ms src">ECBDFR → IRSTEA01EZM156N</div></div>
     </div>
     <div class="g3">
-      <div class="mc"><div class="ml">🇨🇳 PBoC LPR 1Y</div><div class="mv" id="p-pboc">—</div><div class="ms src">BIS WS_CBPOL_D → FRED</div></div>
-      <div class="mc"><div class="ml">🇬🇧 BoE bank rate</div><div class="mv" id="p-boe">—</div><div class="ms src">BIS WS_CBPOL_D → FRED</div></div>
-      <div class="mc"><div class="ml">🇯🇵 BoJ rate</div><div class="mv" id="p-boj">—</div><div class="ms src">BIS WS_CBPOL_D → FRED</div></div>
+      <div class="mc"><div class="ml">🇨🇳 PBoC LPR 1Y</div><div class="mv" id="p-pboc">—</div><div class="ms src">IRSTCB01CNM156N → INTDSRCNM193N</div></div>
+      <div class="mc"><div class="ml">🇬🇧 BoE bank rate</div><div class="mv" id="p-boe">—</div><div class="ms src">IUDSOIA → IRSTGB01GBM156N → BOERUKM</div></div>
+      <div class="mc"><div class="ml">🇯🇵 BoJ rate</div><div class="mv" id="p-boj">—</div><div class="ms src">IRSTJPN → INTDSRJPM193N</div></div>
     </div>
   </div>
   <div class="sec"><div class="sec-t">Global policy rates comparison</div>
@@ -313,53 +314,32 @@ async function fred(series, params={}){
   }catch(e){log(`ERR  FRED/${series}: ${e.message}`);return[];}
 }
 
-// ── BIS policy rates — bulk CSV download ─────────────────────────────────────
-// BIS publishes WS_CBPOL as a single flat CSV (~200KB). We fetch it once,
-// parse all countries, and cache it. Much more reliable than the SDMX API.
-let _bisCache=null;
-async function loadBisCSV(){
-  if(_bisCache)return _bisCache;
-  // BIS bulk CSV: monthly policy rates for all central banks
-  const url='https://data.bis.org/shapes/WS_CBPOL_csv_flat.zip';
-  // BIS doesn't CORS-expose the zip, but they do expose the raw CSV via the API v1:
-  // https://stats.bis.org/api/v1/data/WS_CBPOL/M.{country}?format=csv
-  // Try fetching individual country CSVs via BIS SDMX v1 (simpler, better CORS support)
-  _bisCache={};
-  const countries={US:'US',AU:'AU',XM:'EZ',CN:'CN',GB:'GB',JP:'JP'};
-  await Promise.all(Object.entries(countries).map(async([code,label])=>{
-    const url=`https://stats.bis.org/api/v1/data/WS_CBPOL/M.${code}?format=csv&startPeriod=${ago(0.5)}`;
-    try{
-      const r=await fetch(url);
-      if(!r.ok){log(`WARN BIS/${label}: HTTP ${r.status}`);return;}
-      const txt=await r.text();
-      // CSV rows: TIME_PERIOD,OBS_VALUE,...
-      const lines=txt.trim().split('\n');
-      const hi=lines[0].split(',').map(h=>h.replace(/"/g,'').trim());
-      const ti=hi.indexOf('TIME_PERIOD'), vi=hi.indexOf('OBS_VALUE');
-      if(ti<0||vi<0){log(`WARN BIS/${label}: cols not found`);return;}
-      const rows=lines.slice(1)
-        .map(l=>l.split(',').map(x=>x.replace(/"/g,'').trim()))
-        .filter(r=>r[ti]&&r[vi]&&r[vi]!==''&&!isNaN(r[vi]))
-        .map(r=>({d:r[ti],v:parseFloat(r[vi])}))
-        .sort((a,b)=>b.d.localeCompare(a.d));
-      if(rows.length){
-        _bisCache[code]=rows[0].v;
-        log(`OK   BIS/${label}: ${rows[0].v}% (${rows[0].d})`);
-      } else {
-        log(`WARN BIS/${label}: no data rows`);
-      }
-    }catch(e){log(`ERR  BIS/${label}: ${e.message}`);}
-  }));
-  return _bisCache;
-}
+// ── Policy rate fetcher: tries multiple FRED series, then hardcoded fallback ──
+// BIS API does NOT support browser CORS — FRED only here.
+// Each rate has 2-3 FRED series to try in order (most current → less current),
+// plus a hardcoded last-resort value verified as of March 2026.
+// The hardcoded value shows with a "~" prefix so you know it's a fallback.
 
-async function bisRate(countryCode, label, fredFallback){
-  const cache=await loadBisCSV();
-  if(cache[countryCode]!=null) return cache[countryCode];
-  log(`INFO ${label}: BIS empty, trying FRED fallback`);
-  const obs=await fred(fredFallback,{limit:'1'});
-  const f=first(obs);
-  return f?f.v:null;
+const POLICY_RATES={
+  // [label, [...fredSeries], hardcodedFallback, hardcodedDate]
+  fed: ['Fed',    ['DFEDTARU','FEDFUNDS'],        3.75, '2026-01'],
+  rba: ['RBA',    ['RBATCTR','IRSTAU01AUM156N'],  3.85, '2026-02'],
+  ecb: ['ECB',    ['ECBDFR','IRSTEA01EZM156N'],   2.0,  '2026-03'],
+  pboc:['PBoC',   ['IRSTCB01CNM156N','INTDSRCNM193N'], 3.1, '2025-10'],
+  boe: ['BoE',    ['IUDSOIA','IRSTGB01GBM156N','BOERUKM'], 4.25, '2026-02'],
+  boj: ['BoJ',    ['IRSTJPN','INTDSRJPM193N'],    0.75, '2025-12'],
+};
+
+async function getPolicyRate(key){
+  const [label, series, fallback, fbDate]=POLICY_RATES[key];
+  for(const s of series){
+    const obs=await fred(s,{limit:'1'});
+    const f=first(obs);
+    if(f){log(`OK   ${label}: ${f.v}% (${f.d}) via FRED/${s}`);return{v:f.v,src:s,fallback:false};}
+  }
+  // All FRED series failed — use hardcoded value
+  log(`WARN ${label}: all FRED series failed, using hardcoded ${fallback}% (as of ${fbDate})`);
+  return{v:fallback,src:`hardcoded (${fbDate})`,fallback:true};
 }
 
 // Fetches latest scalar value from FRED
@@ -515,32 +495,24 @@ async function go(){
   const fredResults=await Promise.all(fredFetches.map(([key,series,params])=>fred(series,params).then(r=>[key,r])));
   fredResults.forEach(([key,val])=>{data[key]=val;});
 
-  // ── 2. Policy rates — BIS monthly CSV (v1 API) with FRED fallback ───────────
-  log('\n--- Fetching policy rates (BIS CSV + FRED fallback) ---');
+  // ── 2. Policy rates — multiple FRED series per rate, hardcoded last resort ───
+  log('\n--- Fetching policy rates ---');
+  const mk=(r)=>[{d:new Date().toISOString().slice(0,10),v:r.v,fallback:r.fallback,src:r.src}];
 
-  // Fed: FRED DFEDTARU (daily, very current — most reliable source for Fed rate)
-  const ffrUObs=await fred('DFEDTARU',{limit:'1'});
-  const ffrObs=await fred('FEDFUNDS',{limit:'1'});
-  data.ffrU=ffrUObs; data.ffr=ffrObs;
+  const [fedR,rbaR,ecbR,pbocR,boeR,bojR]=await Promise.all([
+    getPolicyRate('fed'), getPolicyRate('rba'), getPolicyRate('ecb'),
+    getPolicyRate('pboc'), getPolicyRate('boe'), getPolicyRate('boj'),
+  ]);
 
-  // All other central banks: BIS WS_CBPOL monthly CSV → FRED fallback
-  // bisRate(bisCountryCode, displayLabel, fredFallbackSeries)
-  const mk=v=>v!=null?[{d:new Date().toISOString().slice(0,10),v}]:[];
+  data.ffrU=mk(fedR); data.ffr=mk(fedR);
+  data.rba =mk(rbaR);
+  data.ecb =mk(ecbR);
+  data.pboc=mk(pbocR);
+  data.boe =mk(boeR);
+  data.boj =mk(bojR);
 
-  const rbaVal  = await bisRate('AU', 'RBA',  'RBATCTR');
-  data.rba = mk(rbaVal); log(`RESULT RBA: ${rbaVal}`);
-
-  const ecbVal  = await bisRate('XM', 'ECB',  'ECBDFR');
-  data.ecb = mk(ecbVal); log(`RESULT ECB: ${ecbVal}`);
-
-  const pbocVal = await bisRate('CN', 'PBoC', 'INTDSRCNM193N');
-  data.pboc= mk(pbocVal); log(`RESULT PBoC: ${pbocVal}`);
-
-  const boeVal  = await bisRate('GB', 'BoE',  'BOERUKM');
-  data.boe = mk(boeVal); log(`RESULT BoE: ${boeVal}`);
-
-  const bojVal  = await bisRate('JP', 'BoJ',  'INTDSRJPM193N');
-  data.boj = mk(bojVal); log(`RESULT BoJ: ${bojVal}`);
+  // Mark fallback values with ~ in display so user knows they're hardcoded
+  const fmtRate=(r)=>r.fallback?`~${r.v.toFixed(2)}%`:pct(r.v);
 
   log('\n--- Populating dashboard ---');
 
@@ -554,11 +526,11 @@ async function go(){
   set('o-de10', v('de10')!=null?pct(v('de10')):'—');
   set('o-cn10', v('cn10')!=null?pct(v('cn10')):'—');
 
-  const fedRate=v('ffrU')??v('ffr');
-  set('o-fed', fedRate!=null?pct(fedRate):'—');
-  set('o-rba', v('rba')!=null?pct(v('rba')):'—');
-  set('o-ecb', v('ecb')!=null?pct(v('ecb')):'—');
-  set('o-pboc',v('pboc')!=null?pct(v('pboc')):'—');
+  const fedRate=fedR.v;
+  set('o-fed', fmtRate(fedR));
+  set('o-rba', fmtRate(rbaR));
+  set('o-ecb', fmtRate(ecbR));
+  set('o-pboc',fmtRate(pbocR));
 
   const usCpiYoY=calcYoY(data.usCpi,12);
   const auCpiYoY=calcYoY(data.auCpi,4); // quarterly: 4 periods = 1 year
@@ -727,12 +699,12 @@ async function go(){
   }
 
   // === POLICY ===
-  set('p-fed', fedRate!=null?pct(fedRate):'—');
-  set('p-rba', v('rba')!=null?pct(v('rba')):'—');
-  set('p-ecb', v('ecb')!=null?pct(v('ecb')):'—');
-  set('p-pboc',v('pboc')!=null?pct(v('pboc')):'—');
-  set('p-boe', v('boe')!=null?pct(v('boe')):'—');
-  set('p-boj', v('boj')!=null?pct(v('boj')):'—');
+  set('p-fed', fmtRate(fedR));
+  set('p-rba', fmtRate(rbaR));
+  set('p-ecb', fmtRate(ecbR));
+  set('p-pboc',fmtRate(pbocR));
+  set('p-boe', fmtRate(boeR));
+  set('p-boj', fmtRate(bojR));
 
   const imp1=(v('us2')!=null&&v('ffr')!=null)?(2*v('us2')-v('ffr')):null;
   const imp2=(v('us2')!=null&&v('us1y')!=null)?(2*v('us2')-v('us1y')):null;
