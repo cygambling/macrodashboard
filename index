@@ -292,7 +292,7 @@ h1{font-size:21px;font-weight:500}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 // ── NEW FRED API KEY — keep this private / out of public repos ────────────────
-const KEY='13e376947d054d0040f9989a3601fb3d';
+const KEY='__FRED_API_KEY__';
 const FRED_API='https://api.stlouisfed.org/fred/series/observations';
 const charts={};
 const logEl=()=>document.getElementById('log');
